@@ -1,0 +1,20 @@
+# Load required libraries
+library(randomForest)
+library(dismo)  # For handling SDM workflows
+
+# Prepare the data
+data <- combined_dataset # Contains occurrence, climate, and trait variables
+
+# Run Random Forest SDM with functional traits
+rf_model <- randomForest(occurrence ~ temperature + precipitation + trait1 + trait2, 
+                         data = data, 
+                         ntree = 500, 
+                         importance = TRUE)
+
+# Evaluate model performance
+print(rf_model)
+varImpPlot(rf_model)  # View importance of climate and trait predictors
+
+# Predict future distribution under climate scenarios
+future_data <- future_climate_dataset # Add climate data for future scenario
+predictions <- predict(rf_model, newdata = future_data)
