@@ -213,3 +213,33 @@ surface_plot <- plot_ly(x = ~d_f_seq, y = ~d_p_seq, z = ~S_matrix) %>%
            zaxis = list(title = "Invasion Success (S)")
          ))
 surface_plot
+
+# For demonstration, create a binary invasion_success variable:
+final_results$invasion_success <- ifelse(final_results$invasiveness > median(final_results$invasiveness, na.rm = TRUE), 1, 0)
+
+# Convert invader and community to factors
+final_results$invader <- factor(final_results$invader)
+final_results$community <- factor(final_results$community)
+
+# Extract the phylogenetic tree for invaders only (assumes invader_names is defined)
+invader_tree <- drop.tip(master_tree, setdiff(master_tree$tip.label, invader_names))
+
+# Compute the phylogenetic covariance matrix (correlation matrix) for invader species
+phylo_cov <- vcv(invader_tree, corr = TRUE)
+
+# Construct a PGLMM to predict binary invasion success from trait and phylogenetic distances,
+# including an interaction between d_f and d_p, and including community as a random effect.
+# The 'invader' random effect is modeled with the phylogenetic covariance.
+pglmm_model <- pglmm(
+  invasion_success ~ d_f + d_p + E + d_f:d_p + (1 | community) + (1 | invader__), 
+  data = final_results,
+  cov_ranef = list(invader = phylo_cov),
+  family = "binomial",
+  REML = FALSE,
+  calc.DIC = TRUE,
+  calc.WAIC = TRUE,
+  s2.init = 0.02
+)
+
+# Display the summary of the model
+summary(pglmm_model)
