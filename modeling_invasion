@@ -1,123 +1,215 @@
 # Load necessary libraries
-library(ggplot2)
-library(plotly)
 library(ape)
 library(picante)
 library(geometry)
-library(FNN)
-library(phytools)
-library(phyr)
-library(ggeffects)
 library(ggplot2)
-library(gtsummary)
-library(V.PhyloMaker)
+library(plotly)
 
-# Define an environmental gradient (E), for example:
-E_value <- 2  # this can be varied to simulate different environmental conditions
+set.seed(42)
 
-# Define baseline parameters for the functional component
-d_f0 <- 5.0       # baseline optimal functional distance when E = 0
-d_f1 <- 0.5       # change in optimal functional distance per unit E
-beta_f0 <- 0.5    # baseline steepness for functional distance
-beta_f1 <- 0.1    # change in steepness per unit E
+### 1. Generate Trait Data for Species ###
+n_traits <- 5
+n_native_total <- 50  # Total native species
+n_invaders_total <- 5 # Total invader species
+n_communities <- 5    # Number of communities
 
-# Define baseline parameters for the phylogenetic component
-d_p0 <- 4.0       # baseline optimal phylogenetic distance when E = 0
-d_p1 <- -0.3      # change in optimal phylogenetic distance per unit E
-beta_p0 <- 0.3    # baseline steepness for phylogenetic distance
-beta_p1 <- 0.05   # change in steepness per unit E
+# Create species names
+native_names <- paste0("sp", 1:n_native_total)
+invader_names <- paste0("inv", 1:n_invaders_total)
 
-# Calculate the environment-dependent optimal distances and steepness
-d_f_star_E <- d_f0 + d_f1 * E_value
-d_p_star_E <- d_p0 + d_p1 * E_value
-beta_f_E <- beta_f0 + beta_f1 * E_value
-beta_p_E <- beta_p0 + beta_p1 * E_value
+# Generate a trait matrix for all species (natives and invaders)
+all_traits <- matrix(runif((n_native_total + n_invaders_total) * n_traits, min = 0, max = 10),
+                     ncol = n_traits,
+                     dimnames = list(c(native_names, invader_names), paste0("trait", 1:n_traits)))
 
-# Interaction parameter remains constant for simplicity
+# Extract invader traits
+invader_traits <- all_traits[invader_names, ]
+
+### 2. Assign Native Species to Communities ###
+# For each of the 5 communities, randomly assign a subset of native species
+# (for example, each community gets 10 randomly chosen native species)
+community_species <- list()
+for(i in 1:n_communities){
+  community_species[[paste0("Community", i)]] <- sample(1:n_native_total, 10)
+}
+
+### 3. Perform PCA on Native Trait Data ###
+# Use the full native species pool to build the trait space
+native_traits <- all_traits[native_names, ]
+pca_result <- prcomp(native_traits, scale. = TRUE)
+
+# Project native species into PCA space (we'll use the first 2 principal components)
+native_scores <- pca_result$x[, 1:2]
+# Project invaders into the same PCA space
+invader_scores <- predict(pca_result, newdata = all_traits[invader_names, ])[, 1:2]
+
+### 4. Calculate Functional (Trait) Distances for Each Community ###
+# For each community, compute the centroid (mean position) of native species in PCA space
+# and then compute the Euclidean distance for each invader from that centroid.
+results_list <- list()
+
+# Loop over communities
+for(comm in names(community_species)){
+  native_idx <- community_species[[comm]]
+  native_comm_names <- native_names[native_idx]
+  
+  # Subset native scores for this community
+  community_native_scores <- native_scores[native_comm_names, , drop = FALSE]
+  
+  # Compute the centroid of native species in PCA space
+  centroid <- colMeans(community_native_scores)
+  
+  # For each invader, compute the Euclidean distance from the community centroid
+  for(inv in 1:n_invaders_total){
+    inv_score <- invader_scores[inv, ]
+    d_f <- sqrt(sum((inv_score - centroid)^2))
+    
+    # Save the functional distance for later use
+    results_list[[paste(comm, invader_names[inv], sep = "_")]] <- list(d_f = d_f,
+                                                                       community = comm,
+                                                                       invader = invader_names[inv])
+  }
+}
+
+### 5. Incorporate Phylogenetic Differentiation ###
+# Simulate a phylogenetic tree for all species (natives + invaders)
+master_tree <- rtree(n = n_native_total + n_invaders_total)
+master_tree$tip.label <- c(native_names, invader_names)
+# Calculate cophenetic distances for the master tree
+master_phylo_dist <- cophenetic(master_tree)
+
+# For each community/invader pair, compute the mean phylogenetic distance (MPD) between the invader and the native species in that community
+for(name in names(results_list)){
+  # Parse community and invader name from the list name
+  split_name <- strsplit(name, "_")[[1]]
+  comm <- split_name[1]
+  inv <- split_name[2]
+  native_comm_names <- native_names[community_species[[comm]]]
+  
+  # Compute the mean phylogenetic distance for the invader to native species in that community
+  mpd <- mean(master_phylo_dist[inv, native_comm_names])
+  
+  results_list[[name]]$d_p <- mpd
+}
+
+### 6. Incorporate Environmental Variability ###
+# Simulate an environmental variable E for each community (e.g., disturbance, nutrient level)
+community_env <- runif(n_communities, min = 0, max = 5)
+names(community_env) <- names(community_species)
+
+# Define baseline parameters (when E = 0) and environmental effects:
+# Functional component parameters:
+d_f0 <- 5.0       # Baseline optimal functional distance
+d_f1 <- 0.5       # Change per unit E for functional optimum
+beta_f0 <- 0.5    # Baseline steepness for functional performance
+beta_f1 <- 0.1    # Change per unit E for functional steepness
+
+# Phylogenetic component parameters:
+d_p0 <- 4.0       # Baseline optimal phylogenetic distance
+d_p1 <- -0.3      # Change per unit E for phylogenetic optimum
+beta_p0 <- 0.3    # Baseline steepness for phylogenetic performance
+beta_p1 <- 0.05   # Change per unit E for phylogenetic steepness
+
+# Interaction parameter lambda is kept constant
 lambda <- 0.2
-A <- 1.0  # scaling constant
 
-# Create a grid of functional and phylogenetic distances
-d_f <- seq(0, 10, length.out = 200)
-d_p <- seq(0, 10, length.out = 200)
-grid <- expand.grid(d_f = d_f, d_p = d_p)
+# Overall scaling A(E) as a function of E:
+A0 <- 1; A1 <- 0.1
 
-# Compute invasion success S(E) with environmental dependence
-grid$S <- A * exp(-beta_f_E * (grid$d_f - d_f_star_E)^2 -
-                    beta_p_E * (grid$d_p - d_p_star_E)^2 -
-                    lambda * (grid$d_f - d_f_star_E) * (grid$d_p - d_p_star_E))
+### 7. Compute Invasion Success S(d_f, d_p, E) for Each Invader in Each Community ###
+# Extend the previous results_list to include S computed from:
+# S(d_f, d_p, E) = A(E) * exp[-beta_f(E)*(d_f - d_f*(E))^2 - beta_p(E)*(d_p - d_p*(E))^2 - lambda*(d_f - d_f*(E))*(d_p - d_p*(E))]
+final_results <- data.frame()
 
-# Plot the 3D surface using plotly
-S_matrix <- matrix(grid$S, nrow = length(d_p), ncol = length(d_f), byrow = TRUE)
-surface_plot <- plot_ly(x = ~d_f, y = ~d_p, z = ~S_matrix) %>%
+for(name in names(results_list)){
+  rec <- results_list[[name]]
+  comm <- rec$community
+  E <- community_env[comm]
+  
+  # Compute environment-dependent parameters
+  A_E <- A0 + A1 * E
+  d_f_star_E <- d_f0 + d_f1 * E
+  beta_f_E <- beta_f0 + beta_f1 * E
+  d_p_star_E <- d_p0 + d_p1 * E
+  beta_p_E <- beta_p0 + beta_p1 * E
+  
+  # Extract functional and phylogenetic distances for the invader
+  d_f_val <- rec$d_f
+  d_p_val <- rec$d_p
+  
+  # Compute S based on the formula
+  S_val <- A_E * exp( - beta_f_E * (d_f_val - d_f_star_E)^2 -
+                        beta_p_E * (d_p_val - d_p_star_E)^2 -
+                        lambda * (d_f_val - d_f_star_E) * (d_p_val - d_p_star_E))
+  
+  final_results <- rbind(final_results,
+                         data.frame(community = comm,
+                                    invader = rec$invader,
+                                    E = E,
+                                    d_f = d_f_val,
+                                    d_p = d_p_val,
+                                    d_f_star = d_f_star_E,
+                                    d_p_star = d_p_star_E,
+                                    beta_f = beta_f_E,
+                                    beta_p = beta_p_E,
+                                    A_E = A_E,
+                                    invasiveness = S_val))
+}
+
+print(final_results)
+
+### 8. Visualization ###
+# Plot Invasion Success as a function of functional and phylogenetic distances for each community
+ggplot(final_results, aes(x = d_f, y = invasiveness, color = invader)) +
+  geom_point(size = 3) +
+  facet_wrap(~ community, ncol = 2) +
+  labs(title = "Invasion Success vs. Functional Distance",
+       x = "Functional Distance (d_f)",
+       y = "Invasion Success (S)") +
+  theme_classic()
+
+ggplot(final_results, aes(x = d_p, y = invasiveness, color = invader)) +
+  geom_point(size = 3) +
+  facet_wrap(~ community, ncol = 2) +
+  labs(title = "Invasion Success vs. Phylogenetic Distance",
+       x = "Phylogenetic Distance (d_p)",
+       y = "Invasion Success (S)") +
+  theme_classic()
+
+# Additionally, create a contour plot for one community (e.g., Community1) for a detailed view.
+community1_data <- subset(final_results, community == "Community1")
+# Create a grid for contour plotting:
+d_f_seq <- seq(min(community1_data$d_f)-1, max(community1_data$d_f)+1, length.out = 100)
+d_p_seq <- seq(min(community1_data$d_p)-1, max(community1_data$d_p)+1, length.out = 100)
+grid2 <- expand.grid(d_f = d_f_seq, d_p = d_p_seq)
+# Use the parameters for Community1 (averaged for illustration)
+E_comm1 <- community_env["Community1"]
+A_comm1 <- A0 + A1 * E_comm1
+d_f_star_comm1 <- d_f0 + d_f1 * E_comm1
+beta_f_comm1 <- beta_f0 + beta_f1 * E_comm1
+d_p_star_comm1 <- d_p0 + d_p1 * E_comm1
+beta_p_comm1 <- beta_p0 + beta_p1 * E_comm1
+
+grid2$S <- A_comm1 * exp(-beta_f_comm1 * (grid2$d_f - d_f_star_comm1)^2 -
+                           beta_p_comm1 * (grid2$d_p - d_p_star_comm1)^2 -
+                           lambda * (grid2$d_f - d_f_star_comm1) * (grid2$d_p - d_p_star_comm1))
+
+contour_plot_comm1 <- ggplot(grid2, aes(x = d_f, y = d_p, z = S)) +
+  geom_contour_filled() +
+  labs(title = paste("Contour of Invasion Success in Community1 (E =", round(E_comm1, 2), ")"),
+       x = "Functional Distance (d_f)",
+       y = "Phylogenetic Distance (d_p)") +
+  theme_classic()
+print(contour_plot_comm1)
+
+# Create an interactive 3D surface plot for Community1 using plotly
+S_matrix <- matrix(grid2$S, nrow = length(d_p_seq), ncol = length(d_f_seq), byrow = TRUE)
+surface_plot <- plot_ly(x = ~d_f_seq, y = ~d_p_seq, z = ~S_matrix) %>%
   add_surface(colorscale = "Viridis") %>%
-  layout(title = paste("3D Surface of Invasion Success (E =", E_value, ")"),
+  layout(title = paste("3D Surface of Invasion Success in Community1 (E =", round(E_comm1, 2), ")"),
          scene = list(
            xaxis = list(title = "Functional Distance (d_f)"),
            yaxis = list(title = "Phylogenetic Distance (d_p)"),
            zaxis = list(title = "Invasion Success (S)")
          ))
 surface_plot
-
-# Contour plot using ggplot2 for additional visualization
-contour_plot <- ggplot(grid, aes(x = d_f, y = d_p, z = S)) +
-  geom_contour_filled() +
-  labs(x = "Functional Distance (d_f)",
-       y = "Phylogenetic Distance (d_p)",
-       title = paste("Contour Map of Invasion Success (E =", E_value, ")")) +
-  theme_classic()
-print(contour_plot)
-
-
-
-
-# model invasion success 
-# Create a binary invasion success variable based on invasiveness threshold (median)
-results_df$invasion_success <- ifelse(results_df$invasiveness > median(results_df$invasiveness, na.rm = TRUE), 1, 0)
-
-# Confirm response is binary
-table(results_df$invasion_success)
-
-# Scale predictors to avoid numerical issues
-results_df$mpd <- scale(results_df$mpd)
-results_df$trait_dist <- scale(results_df$trait_dist)
-results_df$nri <- scale(results_df$nri)
-results_df$nti <- scale(results_df$nti)
-
-
-# For modeling, assume each invader is measured at a given community.
-# Create factors for species and sites
-# Make sure 'species' and 'site' are factors
-results_df$species <- factor(results_df$species)
-results_df$site    <- factor(results_df$site)
-
-# For the phylogenetic covariance matrix, we need a tree for the invaders.
-# Extract invader names that appear in results_df
-invader_in_model <- unique(results_df$species)
-# Subset master_tree to these invaders (if some invaders are missing, they should have been added)
-invader_tree <- drop.tip(master_tree, setdiff(master_tree$tip.label, invader_in_model))
-phylo_cov <- vcv(invader_tree, corr = TRUE)
-
-phylo_cov <- cov2cor(phylo_cov)
-
-# Fit a PGLMM using phyr::pglmm
-pglmm_test <- pglmm(
-  invasion_success ~ mpd * trait_dist + nri + nti + (1 | species__) + (1 | site),
-  data = results_df,
-  cov_ranef = list(species = phylo_cov),
-  family = "binomial",
-  REML = FALSE
-)
-
-summary(pglmm_test)
-
-# This means that invasives with traits similar to native species are more likely to establish successfully, regardless of phylogenetic distance.
-
-# plot model results
-ggplot(results_df, aes(x = trait_dist, y = invasion_success, color = mpd)) +
-  geom_point() +
-  geom_smooth(method = "glm", method.args = list(family = "binomial"), se = TRUE) +
-  labs(title = "Interaction: Trait Distance x MPD on Invasion Success",
-       x = "Trait Distance", y = "Invasion Success") +
-  theme_classic()
-
