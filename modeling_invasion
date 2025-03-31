@@ -1,0 +1,123 @@
+# Load necessary libraries
+library(ggplot2)
+library(plotly)
+library(ape)
+library(picante)
+library(geometry)
+library(FNN)
+library(phytools)
+library(phyr)
+library(ggeffects)
+library(ggplot2)
+library(gtsummary)
+library(V.PhyloMaker)
+
+# Define an environmental gradient (E), for example:
+E_value <- 2  # this can be varied to simulate different environmental conditions
+
+# Define baseline parameters for the functional component
+d_f0 <- 5.0       # baseline optimal functional distance when E = 0
+d_f1 <- 0.5       # change in optimal functional distance per unit E
+beta_f0 <- 0.5    # baseline steepness for functional distance
+beta_f1 <- 0.1    # change in steepness per unit E
+
+# Define baseline parameters for the phylogenetic component
+d_p0 <- 4.0       # baseline optimal phylogenetic distance when E = 0
+d_p1 <- -0.3      # change in optimal phylogenetic distance per unit E
+beta_p0 <- 0.3    # baseline steepness for phylogenetic distance
+beta_p1 <- 0.05   # change in steepness per unit E
+
+# Calculate the environment-dependent optimal distances and steepness
+d_f_star_E <- d_f0 + d_f1 * E_value
+d_p_star_E <- d_p0 + d_p1 * E_value
+beta_f_E <- beta_f0 + beta_f1 * E_value
+beta_p_E <- beta_p0 + beta_p1 * E_value
+
+# Interaction parameter remains constant for simplicity
+lambda <- 0.2
+A <- 1.0  # scaling constant
+
+# Create a grid of functional and phylogenetic distances
+d_f <- seq(0, 10, length.out = 200)
+d_p <- seq(0, 10, length.out = 200)
+grid <- expand.grid(d_f = d_f, d_p = d_p)
+
+# Compute invasion success S(E) with environmental dependence
+grid$S <- A * exp(-beta_f_E * (grid$d_f - d_f_star_E)^2 -
+                    beta_p_E * (grid$d_p - d_p_star_E)^2 -
+                    lambda * (grid$d_f - d_f_star_E) * (grid$d_p - d_p_star_E))
+
+# Plot the 3D surface using plotly
+S_matrix <- matrix(grid$S, nrow = length(d_p), ncol = length(d_f), byrow = TRUE)
+surface_plot <- plot_ly(x = ~d_f, y = ~d_p, z = ~S_matrix) %>%
+  add_surface(colorscale = "Viridis") %>%
+  layout(title = paste("3D Surface of Invasion Success (E =", E_value, ")"),
+         scene = list(
+           xaxis = list(title = "Functional Distance (d_f)"),
+           yaxis = list(title = "Phylogenetic Distance (d_p)"),
+           zaxis = list(title = "Invasion Success (S)")
+         ))
+surface_plot
+
+# Contour plot using ggplot2 for additional visualization
+contour_plot <- ggplot(grid, aes(x = d_f, y = d_p, z = S)) +
+  geom_contour_filled() +
+  labs(x = "Functional Distance (d_f)",
+       y = "Phylogenetic Distance (d_p)",
+       title = paste("Contour Map of Invasion Success (E =", E_value, ")")) +
+  theme_classic()
+print(contour_plot)
+
+
+
+
+# model invasion success 
+# Create a binary invasion success variable based on invasiveness threshold (median)
+results_df$invasion_success <- ifelse(results_df$invasiveness > median(results_df$invasiveness, na.rm = TRUE), 1, 0)
+
+# Confirm response is binary
+table(results_df$invasion_success)
+
+# Scale predictors to avoid numerical issues
+results_df$mpd <- scale(results_df$mpd)
+results_df$trait_dist <- scale(results_df$trait_dist)
+results_df$nri <- scale(results_df$nri)
+results_df$nti <- scale(results_df$nti)
+
+
+# For modeling, assume each invader is measured at a given community.
+# Create factors for species and sites
+# Make sure 'species' and 'site' are factors
+results_df$species <- factor(results_df$species)
+results_df$site    <- factor(results_df$site)
+
+# For the phylogenetic covariance matrix, we need a tree for the invaders.
+# Extract invader names that appear in results_df
+invader_in_model <- unique(results_df$species)
+# Subset master_tree to these invaders (if some invaders are missing, they should have been added)
+invader_tree <- drop.tip(master_tree, setdiff(master_tree$tip.label, invader_in_model))
+phylo_cov <- vcv(invader_tree, corr = TRUE)
+
+phylo_cov <- cov2cor(phylo_cov)
+
+# Fit a PGLMM using phyr::pglmm
+pglmm_test <- pglmm(
+  invasion_success ~ mpd * trait_dist + nri + nti + (1 | species__) + (1 | site),
+  data = results_df,
+  cov_ranef = list(species = phylo_cov),
+  family = "binomial",
+  REML = FALSE
+)
+
+summary(pglmm_test)
+
+# This means that invasives with traits similar to native species are more likely to establish successfully, regardless of phylogenetic distance.
+
+# plot model results
+ggplot(results_df, aes(x = trait_dist, y = invasion_success, color = mpd)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), se = TRUE) +
+  labs(title = "Interaction: Trait Distance x MPD on Invasion Success",
+       x = "Trait Distance", y = "Invasion Success") +
+  theme_classic()
+
